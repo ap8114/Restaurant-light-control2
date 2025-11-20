@@ -11,12 +11,16 @@ import {
     RiTimeLine,
     RiCheckLine,
     RiCloseLine,
-    RiPlayLine
+    RiPlayLine,
+    RiBankCardLine,
+    RiSmartphoneLine
 } from 'react-icons/ri';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axiosInstance from '../../../utils/axiosInstance';
+import Swal from 'sweetalert2';
 
 const SessionTracker = () => {
+    const navigate = useNavigate();
     // Session data state
     const [sessionData, setSessionData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -191,6 +195,134 @@ const SessionTracker = () => {
         setTimeout(() => {
             setIsExtended(false);
         }, 3000);
+    };
+
+    // Handle End Session with Payment
+    const handleEndSessionWithPayment = async () => {
+        const currentCharges = calculateCurrentCharges();
+
+        const result = await Swal.fire({
+            title: 'End Session & Pay?',
+            html: `
+                <div style="text-align: left; padding: 10px;">
+                    <h5>Session Summary</h5>
+                    <hr />
+                    <p><strong>Table Type:</strong> ${sessionData.table_type}</p>
+                    <p><strong>Session ID:</strong> ${sessionData.session_id}</p>
+                    <p><strong>Time Elapsed:</strong> ${formatTime(elapsedSeconds)}</p>
+                    <p><strong>Hourly Rate:</strong> $${parseFloat(sessionData.hourly_rate).toFixed(2)}/hour</p>
+                    <hr />
+                    <h4 style="color: #ffc107;"><strong>Total Amount: $${currentCharges}</strong></h4>
+                    <p style="font-size: 12px; color: #666;">This will end your session and process payment</p>
+                </div>
+            `,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#28a745',
+            cancelButtonColor: '#6c757d',
+            confirmButtonText: '<i class="ri-money-dollar-circle-line"></i> Proceed to Payment',
+            cancelButtonText: 'Cancel',
+            customClass: {
+                popup: 'swal-wide'
+            }
+        });
+
+        if (result.isConfirmed) {
+            // Show payment method selection
+            const paymentResult = await Swal.fire({
+                title: 'Select Payment Method',
+                html: `
+                    <div style="display: flex; flex-direction: column; gap: 10px; padding: 20px;">
+                        <button id="pay-cash" class="swal2-confirm swal2-styled" style="background-color: #28a745;">
+                            <i class="ri-money-dollar-circle-line"></i> Cash
+                        </button>
+                        <button id="pay-card" class="swal2-confirm swal2-styled" style="background-color: #007bff;">
+                            <i class="ri-bank-card-line"></i> Card
+                        </button>
+                        <button id="pay-upi" class="swal2-confirm swal2-styled" style="background-color: #6f42c1;">
+                            <i class="ri-smartphone-line"></i> UPI
+                        </button>
+                    </div>
+                `,
+                showConfirmButton: false,
+                showCancelButton: true,
+                cancelButtonText: 'Go Back',
+                didOpen: () => {
+                    document.getElementById('pay-cash').addEventListener('click', () => {
+                        processPayment('cash');
+                    });
+                    document.getElementById('pay-card').addEventListener('click', () => {
+                        processPayment('card');
+                    });
+                    document.getElementById('pay-upi').addEventListener('click', () => {
+                        processPayment('upi');
+                    });
+                }
+            });
+        }
+    };
+
+    // Process payment
+    const processPayment = async (paymentMethod) => {
+        Swal.close();
+
+        // Show processing
+        Swal.fire({
+            title: 'Processing Payment...',
+            html: 'Please wait while we process your payment',
+            allowOutsideClick: false,
+            didOpen: () => {
+                Swal.showLoading();
+            }
+        });
+
+        try {
+            const currentCharges = calculateCurrentCharges();
+
+            // Update session status to completed
+            await axiosInstance.patch(`/sessions/${sessionData.id}/status`, {
+                status: 'completed',
+                end_time: new Date().toISOString(),
+                payment_status: 'paid',
+                payment_method: paymentMethod,
+                total_amount: currentCharges
+            });
+
+            // If table session, free up the table
+            if (sessionData.table_id) {
+                await axiosInstance.put(`/tables/${sessionData.table_id}`, {
+                    status: 'available'
+                });
+            }
+
+            // Show success
+            Swal.fire({
+                icon: 'success',
+                title: 'Payment Successful!',
+                html: `
+                    <p>Your session has been ended and payment of <strong>$${currentCharges}</strong> has been processed.</p>
+                    <p style="font-size: 12px; color: #666;">Thank you for your visit!</p>
+                `,
+                confirmButtonText: 'View History',
+                showCancelButton: true,
+                cancelButtonText: 'Close'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    navigate('/user/sessionhistory');
+                } else {
+                    navigate('/user/bookatable');
+                }
+            });
+
+        } catch (error) {
+            console.error('Payment error:', error);
+            Swal.fire({
+                icon: 'error',
+                title: 'Payment Failed',
+                text: error.response?.data?.message || 'An error occurred while processing payment. Please try again or contact staff.',
+                confirmButtonText: 'OK'
+            });
+        }
     };
 
     // Calculate current charges
@@ -411,9 +543,12 @@ const SessionTracker = () => {
                                             Pause Session
                                         </button>
                                     )}
-                                    <button className="btn btn-outline-secondary d-flex align-items-center justify-content-start py-2">
-                                        <RiStopLine className="me-2" />
-                                        End Session
+                                    <button
+                                        className="btn btn-danger d-flex align-items-center justify-content-start py-2"
+                                        onClick={handleEndSessionWithPayment}
+                                    >
+                                        <RiMoneyDollarCircleLine className="me-2" />
+                                        Pay & End Session (${calculateCurrentCharges()})
                                     </button>
                                     <Link to='/user/sessionhistory' className="text-decoration-none w-100 ">
                                         <button className="btn btn-outline-secondary d-flex align-items-center justify-content-start py-2 w-100">

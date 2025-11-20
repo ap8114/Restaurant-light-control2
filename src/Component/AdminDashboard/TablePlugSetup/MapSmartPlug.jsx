@@ -7,10 +7,13 @@ import {
     FaStop,
     FaAngleDown,
     FaFilter,
+    FaSearch,
+    FaLightbulb,
 } from "react-icons/fa";
-import { Button, Spinner, Alert } from "react-bootstrap";
+import { Button, Spinner, Alert, Modal, Form } from "react-bootstrap";
 import axios from "axios";
 import axiosInstance from "../../../utils/axiosInstance";
+import tapoService from "../../../services/TapoSmartPlugService";
 
 const API_BASE = "https://restaurant-backend-production-a63a.up.railway.app/api";
 
@@ -21,6 +24,16 @@ const MapSmartPlug = () => {
     const [actionLoading, setActionLoading] = useState({});
     const [mappingLoading, setMappingLoading] = useState(false);
     const [alert, setAlert] = useState({ show: false, message: "", type: "" });
+
+    // Tapo configuration modal
+    const [showTapoConfig, setShowTapoConfig] = useState(false);
+    const [tapoConfig, setTapoConfig] = useState({
+        email: '',
+        password: '',
+        deviceType: 'plug' // 'plug' or 'bulb'
+    });
+    const [discoveringDevices, setDiscoveringDevices] = useState(false);
+    const [discoveredDevices, setDiscoveredDevices] = useState([]);
 
     // Filter
     const [plugFilters, setPlugFilters] = useState({
@@ -95,28 +108,105 @@ const MapSmartPlug = () => {
         );
     };
 
-    // toggle plug ON/OFF
+    // toggle plug ON/OFF using Tapo service
     const togglePlug = async (plugId, action) => {
         try {
             setActionLoading((prev) => ({ ...prev, [plugId]: true }));
-            await axiosInstance.post(`/plugs/${plugId}/power`, { action });
 
-            // Update plug status locally
-            const updatedPlugs = plugs.map((plug) =>
-                plug.id === plugId
-                    ? {
-                        ...plug,
-                        power_state: action,
-                        status: action === "on" ? "online" : "offline",
-                    }
-                    : plug
-            );
-            setPlugs(updatedPlugs);
+            // Find the plug details
+            const plug = plugs.find(p => p.id === plugId);
+            if (!plug) {
+                throw new Error('Plug not found');
+            }
+
+            // Use Tapo service for local control
+            let success = false;
+            if (action === 'on') {
+                success = await tapoService.turnOn(plug.plug_id, plug.ip_address);
+            } else {
+                success = await tapoService.turnOff(plug.plug_id, plug.ip_address);
+            }
+
+            if (success) {
+                // Update plug status locally
+                const updatedPlugs = plugs.map((p) =>
+                    p.id === plugId
+                        ? {
+                            ...p,
+                            power_state: action,
+                            status: action === "on" ? "online" : "offline",
+                        }
+                        : p
+                );
+                setPlugs(updatedPlugs);
+
+                // Also update backend
+                await axiosInstance.post(`/plugs/${plugId}/power`, { action });
+            }
         } catch (err) {
             console.error("Error controlling plug", err);
-            showAlert("Error controlling plug", "danger");
+            showAlert("Error controlling plug. Manual override may be required.", "danger");
         } finally {
             setActionLoading((prev) => ({ ...prev, [plugId]: false }));
+        }
+    };
+
+    // Discover Tapo devices on network
+    const discoverTapoDevices = async () => {
+        setDiscoveringDevices(true);
+        try {
+            const devices = await tapoService.discoverDevices('192.168.1', 1, 255);
+            setDiscoveredDevices(devices);
+            showAlert(`Found ${devices.length} potential Tapo devices`, 'success');
+        } catch (error) {
+            showAlert('Error discovering devices', 'danger');
+        } finally {
+            setDiscoveringDevices(false);
+        }
+    };
+
+    // Test Tapo connection
+    const testTapoConnection = async (ip) => {
+        try {
+            const result = await tapoService.testConnection(
+                ip,
+                tapoConfig.email,
+                tapoConfig.password
+            );
+
+            if (result.success) {
+                showAlert(`Successfully connected to device at ${ip}`, 'success');
+                return true;
+            } else {
+                showAlert(`Connection failed: ${result.error}`, 'danger');
+                return false;
+            }
+        } catch (error) {
+            showAlert(`Error testing connection: ${error.message}`, 'danger');
+            return false;
+        }
+    };
+
+    // Initialize Tapo device
+    const initializeTapoDevice = async (plugId, ip) => {
+        try {
+            const result = await tapoService.initializeDevice({
+                ip,
+                email: tapoConfig.email,
+                password: tapoConfig.password,
+                deviceId: plugId
+            });
+
+            if (result.success) {
+                showAlert('Device initialized successfully', 'success');
+                return true;
+            } else {
+                showAlert(`Initialization failed: ${result.message}`, 'warning');
+                return false;
+            }
+        } catch (error) {
+            showAlert(`Error initializing device: ${error.message}`, 'danger');
+            return false;
         }
     };
 
@@ -461,10 +551,134 @@ const MapSmartPlug = () => {
                                     </div>
                                 )}
                             </div>
+
+                            {/* Tapo Configuration & Discovery */}
+                            <div className="mt-4">
+                                <h5 className="fw-medium text-dark mb-3">Tapo Device Management</h5>
+                                <div className="d-flex gap-2">
+                                    <Button
+                                        variant="warning"
+                                        onClick={() => setShowTapoConfig(true)}
+                                    >
+                                        <FaLightbulb className="me-2" />
+                                        Configure Tapo
+                                    </Button>
+                                    <Button
+                                        variant="outline-warning"
+                                        onClick={discoverTapoDevices}
+                                        disabled={discoveringDevices}
+                                    >
+                                        {discoveringDevices ? (
+                                            <><Spinner size="sm" /> Scanning...</>
+                                        ) : (
+                                            <><FaSearch className="me-2" />Discover Devices</>
+                                        )}
+                                    </Button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}
             </div>
+
+            {/* Tapo Configuration Modal */}
+            <Modal show={showTapoConfig} onHide={() => setShowTapoConfig(false)} size="lg">
+                <Modal.Header closeButton>
+                    <Modal.Title>Tapo Configuration</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <Alert variant="info">
+                        <strong>Local Control Setup</strong><br />
+                        Enter your Tapo account credentials for local device control.
+                        Your credentials are only used for authentication and are not stored on any server.
+                    </Alert>
+
+                    <Form>
+                        <Form.Group className="mb-3">
+                            <Form.Label>Tapo Account Email</Form.Label>
+                            <Form.Control
+                                type="email"
+                                placeholder="your-email@example.com"
+                                value={tapoConfig.email}
+                                onChange={(e) => setTapoConfig({...tapoConfig, email: e.target.value})}
+                            />
+                            <Form.Text className="text-muted">
+                                The email you use for the Tapo mobile app
+                            </Form.Text>
+                        </Form.Group>
+
+                        <Form.Group className="mb-3">
+                            <Form.Label>Tapo Account Password</Form.Label>
+                            <Form.Control
+                                type="password"
+                                placeholder="Enter password"
+                                value={tapoConfig.password}
+                                onChange={(e) => setTapoConfig({...tapoConfig, password: e.target.value})}
+                            />
+                            <Form.Text className="text-muted">
+                                Your Tapo account password (stored locally only)
+                            </Form.Text>
+                        </Form.Group>
+
+                        <Form.Group className="mb-3">
+                            <Form.Label>Device Type</Form.Label>
+                            <Form.Select
+                                value={tapoConfig.deviceType}
+                                onChange={(e) => setTapoConfig({...tapoConfig, deviceType: e.target.value})}
+                            >
+                                <option value="plug">Smart Plug (P100, P105, P110, P115)</option>
+                                <option value="bulb">Smart Bulb (L510, L520, L530, etc.)</option>
+                                <option value="strip">Power Strip (P300, P304M)</option>
+                            </Form.Select>
+                        </Form.Group>
+                    </Form>
+
+                    <Alert variant="success">
+                        <strong>Supported Devices:</strong>
+                        <ul className="mb-0 mt-2">
+                            <li><strong>Smart Plugs:</strong> P100, P105, P110, P115</li>
+                            <li><strong>Smart Bulbs:</strong> L510, L520, L530, L535, L610, L630</li>
+                            <li><strong>Power Strips:</strong> P300, P304M, P316M</li>
+                        </ul>
+                    </Alert>
+
+                    {discoveredDevices.length > 0 && (
+                        <div className="mt-3">
+                            <h6>Discovered Devices:</h6>
+                            <div className="list-group">
+                                {discoveredDevices.map((device, index) => (
+                                    <div key={index} className="list-group-item d-flex justify-content-between align-items-center">
+                                        <span>{device.ip}</span>
+                                        <Button
+                                            size="sm"
+                                            variant="outline-primary"
+                                            onClick={() => testTapoConnection(device.ip)}
+                                        >
+                                            Test Connection
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button variant="secondary" onClick={() => setShowTapoConfig(false)}>
+                        Close
+                    </Button>
+                    <Button
+                        variant="warning"
+                        onClick={() => {
+                            localStorage.setItem('tapo_config', JSON.stringify(tapoConfig));
+                            showAlert('Tapo configuration saved!', 'success');
+                            setShowTapoConfig(false);
+                        }}
+                        disabled={!tapoConfig.email || !tapoConfig.password}
+                    >
+                        Save Configuration
+                    </Button>
+                </Modal.Footer>
+            </Modal>
         </div>
     );
 };

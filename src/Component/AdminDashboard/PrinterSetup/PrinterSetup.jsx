@@ -6,16 +6,21 @@ import {
   RiAddLine,
   RiEditLine,
   RiDeleteBinLine,
+  RiSearchLine,
+  RiDownloadLine,
 } from 'react-icons/ri';
-import { Modal, Button, Form } from 'react-bootstrap';
+import { Modal, Button, Form, Alert, Spinner } from 'react-bootstrap';
 import axiosInstance from '../../../utils/axiosInstance';
 import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import printerService from '../../../services/PrinterService';
 
 const PrinterSetup = () => {
   const [printers, setPrinters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveredPrinters, setDiscoveredPrinters] = useState([]);
   // State for printer mappings
   const [kitchenPrinter, setKitchenPrinter] = useState('');
   const [barPrinter, setBarPrinter] = useState('');
@@ -158,17 +163,46 @@ const PrinterSetup = () => {
     setShowDeleteModal(true);
   };
 
-  // Handle Test Print
+  // Handle Test Print with fallback system
   const handleTestPrint = async (printer) => {
     try {
-      await axiosInstance.post('/printers/testPrint', {
-        printer_id: printer.id,
-        ip_address: printer.ip_address
+      // Initialize printer service
+      await printerService.initialize();
+
+      // Add printer to service if not already added
+      printerService.addNetworkPrinter({
+        id: printer.id,
+        name: printer.name,
+        type: printer.type,
+        ip: printer.ip_address,
+        port: printer.port || 9100
       });
-      toast.success(`Test page sent to ${printer.name}`);
+
+      // Test print with automatic fallback
+      const result = await printerService.testPrint(printer.id);
+
+      if (result.success) {
+        toast.success(`Test successful using ${result.method}: ${printer.name}`);
+      } else {
+        toast.warning(`Direct print failed, but fallback saved receipt`);
+      }
     } catch (err) {
-      toast.error(`Failed to print on ${printer.name}`);
+      toast.error(`Test print failed: ${err.message}`);
       console.error(err);
+    }
+  };
+
+  // Discover printers on network
+  const handleDiscoverPrinters = async () => {
+    setDiscovering(true);
+    try {
+      const discovered = await printerService.discoverPrinters('192.168.1');
+      setDiscoveredPrinters(discovered);
+      toast.success(`Found ${discovered.length} potential printers!`);
+    } catch (error) {
+      toast.error('Failed to discover printers');
+    } finally {
+      setDiscovering(false);
     }
   };
 
@@ -283,13 +317,65 @@ const PrinterSetup = () => {
             <div className="card-body">
               <div className="d-flex justify-content-between align-items-center mb-4">
                 <h2 className="h5 mb-0">Printer List</h2>
-                <button
-                  className="btn btn-warning d-flex align-items-center gap-2"
-                  onClick={() => setShowAddPrinterModal(true)}
-                >
-                  <RiAddLine /> Add Printer
-                </button>
+                <div className="d-flex gap-2">
+                  <button
+                    className="btn btn-outline-warning d-flex align-items-center gap-2"
+                    onClick={handleDiscoverPrinters}
+                    disabled={discovering}
+                  >
+                    {discovering ? (
+                      <><Spinner size="sm" /> Scanning...</>
+                    ) : (
+                      <><RiSearchLine /> Discover</>
+                    )}
+                  </button>
+                  <button
+                    className="btn btn-warning d-flex align-items-center gap-2"
+                    onClick={() => setShowAddPrinterModal(true)}
+                  >
+                    <RiAddLine /> Add Printer
+                  </button>
+                </div>
               </div>
+
+              {/* Discovered Printers Alert */}
+              {discoveredPrinters.length > 0 && (
+                <Alert variant="success" className="mb-3">
+                  <strong>Found {discoveredPrinters.length} Printer(s)!</strong>
+                  <div className="mt-2">
+                    {discoveredPrinters.map((dp, idx) => (
+                      <div key={idx} className="d-flex justify-content-between align-items-center mb-1">
+                        <span>{dp.ip}:{dp.port}</span>
+                        <Button
+                          size="sm"
+                          variant="outline-success"
+                          onClick={() => {
+                            setNewPrinter({
+                              ...newPrinter,
+                              ip_address: dp.ip,
+                              port: dp.port
+                            });
+                            setShowAddPrinterModal(true);
+                          }}
+                        >
+                          Add This Printer
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </Alert>
+              )}
+
+              {/* Fallback Info */}
+              <Alert variant="info" className="mb-3">
+                <div className="d-flex align-items-center gap-2">
+                  <RiDownloadLine />
+                  <div>
+                    <strong>Multi-Level Fallback Enabled:</strong><br />
+                    <small>Network → Web Print → PDF → Email → Local Storage</small>
+                  </div>
+                </div>
+              </Alert>
               <div className="row g-3">
                 {printers.map((printer) => (
                   <div className="col-12" key={printer.id}>
