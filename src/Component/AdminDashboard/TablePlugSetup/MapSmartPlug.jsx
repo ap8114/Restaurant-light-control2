@@ -14,8 +14,9 @@ import { Button, Spinner, Alert, Modal, Form } from "react-bootstrap";
 import axios from "axios";
 import axiosInstance from "../../../utils/axiosInstance";
 import tapoService from "../../../services/TapoSmartPlugService";
+import { apiUrl } from "../../../utils/config";
 
-const API_BASE = "https://restaurant-backend-production-a63a.up.railway.app/api";
+const API_BASE = apiUrl;
 
 const MapSmartPlug = () => {
     const [tables, setTables] = useState([]);
